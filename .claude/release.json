@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "commitConvention": "conventional",
+  "bump": { "policy": "conventional-commits", "cadence": "per-release", "confirm": true },
+  "apps": [
+    {
+      "id": "cli",
+      "label": "telegram-cli",
+      "kind": "cli",
+      "version": {
+        "anchor": "tag",
+        "tagPrefix": "v",
+        "annotatedTag": true,
+        "files": [
+          { "path": "pyproject.toml", "format": "toml", "key": "project.version", "kind": "semver" }
+        ]
+      },
+      "changelogs": [
+        { "path": "CHANGELOG.md", "format": "keep-a-changelog", "audience": "public", "language": "en", "detail": "full" }
+      ],
+      "publish": [
+        { "channel": "git-tag" },
+        { "channel": "github-release", "notesFrom": "CHANGELOG.md" }
+      ]
+    }
+  ]
+}
