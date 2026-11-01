@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unicodedata
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 from telethon import TelegramClient, utils
@@ -36,6 +37,13 @@ MEDIA_DIR = Path.home() / "Library" / "Caches" / "telegram-cli"
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 SEARCH_PATH = ["/opt/homebrew/bin", str(Path.home() / ".local" / "bin"), "/usr/local/bin"]
 SNIPPET = 4000
+SAVED_MESSAGES = {"me", "self", "saved"}
+
+
+try:
+    VERSION = package_version("telegram-cli")
+except PackageNotFoundError:
+    VERSION = "0+unknown"
 
 
 class CliError(Exception):
@@ -88,7 +96,7 @@ def make_client(session=None):
     api_id, api_hash = api_credentials()
     return TelegramClient(
         StringSession(session or ""), api_id, api_hash,
-        device_model=os.environ.get("TELEGRAM_CLI_DEVICE") or "telegram-cli (Mac)", app_version="telegram-cli 0.1",
+        device_model=os.environ.get("TELEGRAM_CLI_DEVICE") or "telegram-cli (Mac)", app_version=f"telegram-cli {VERSION}",
         system_version="macOS", receive_updates=False,
     )
 
@@ -200,10 +208,13 @@ def message_json(msg, chat=None):
 # --- Resolution ---
 
 async def resolve_chat(client, ref):
-    """A chat by numeric id, @username, t.me link or (unique) title among the user's dialogs."""
+    """A chat by numeric id, @username, t.me link or (unique) title among the user's dialogs.
+    "me" (also "self", "saved") is always Saved Messages, never a chat titled "Me"."""
     ref = (ref or "").strip()
     if not ref:
         raise CliError("missing chat", "bad_args")
+    if ref.lower() in SAVED_MESSAGES:
+        return await client.get_me()
     if ref.startswith("@") or "t.me/" in ref:
         return await client.get_entity(ref)
     dialogs = await client.get_dialogs(limit=None, ignore_migrated=True)
@@ -552,6 +563,7 @@ def human(result):
 def parser():
     p = argparse.ArgumentParser(prog="telegram", description="Your own Telegram account from the terminal (not a bot).")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--version", action="version", version=f"telegram-cli {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     auth = sub.add_parser("auth", help="credentials and session (Keychain)").add_subparsers(dest="auth_cmd", required=True)

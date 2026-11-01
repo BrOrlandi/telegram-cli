@@ -35,7 +35,7 @@ The session shows up in Telegram's device list as "telegram-cli (Mac)" (`TELEGRA
 
 ## Commands
 
-Put `--json` before the command for machine-readable output. A chat is an id, `@username`, `t.me` link or a (unique) title. Reads never mark anything as read.
+Put `--json` before the command for machine-readable output. A chat is an id, `@username`, `t.me` link or a (unique) title; `me` is always your Saved Messages. Reads never mark anything as read.
 
 ```bash
 telegram me
