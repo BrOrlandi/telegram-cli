@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Linux support. Outside macOS (or whenever `TELEGRAM_CLI_SECRETS_FILE` is set) the credentials and the session go to a JSON file with mode `0600`, default `~/.config/telegram-cli/secrets.json`, instead of the Keychain. Downloads default to `~/.cache/telegram-cli`, and the device shows up as "telegram-cli (Linux)".
+
 ## [0.1.1] - 2026-11-01
 
 ### Fixed

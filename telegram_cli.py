@@ -1,9 +1,11 @@
 """
 telegram - headless CLI for the user's own Telegram account (MTProto through Telethon, not a bot).
 
-The session is a Telethon StringSession kept in the macOS Keychain (service $TELEGRAM_CLI_KEYCHAIN_SERVICE,
-default "telegram-cli"; account "telegram:session"), together with the app credentials from my.telegram.org
-("telegram:api_id", "telegram:api_hash"). Nothing secret is written to disk or printed.
+The session is a Telethon StringSession, kept together with the app credentials from my.telegram.org
+(accounts "telegram:session", "telegram:api_id", "telegram:api_hash"). On macOS they live in the Keychain
+(service $TELEGRAM_CLI_KEYCHAIN_SERVICE, default "telegram-cli"). Elsewhere, or when $TELEGRAM_CLI_SECRETS_FILE
+is set, they live in a JSON file only its owner can read (default ~/.config/telegram-cli/secrets.json).
+Secrets are never printed nor passed in argv.
 
 Reads never mark anything as read. Only `send` writes to Telegram.
 """
@@ -33,7 +35,15 @@ ACCOUNT_SESSION = "telegram:session"
 ACCOUNT_API_ID = "telegram:api_id"
 ACCOUNT_API_HASH = "telegram:api_hash"
 ACCOUNT_PENDING = "telegram:pending_login"
-MEDIA_DIR = Path.home() / "Library" / "Caches" / "telegram-cli"
+IS_MAC = sys.platform == "darwin"
+USE_KEYCHAIN = IS_MAC and not os.environ.get("TELEGRAM_CLI_SECRETS_FILE")
+SECRETS_FILE = Path(
+    os.environ.get("TELEGRAM_CLI_SECRETS_FILE")
+    or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "telegram-cli" / "secrets.json"
+).expanduser()
+MEDIA_DIR = (Path.home() / "Library" / "Caches" / "telegram-cli") if IS_MAC else (
+    Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "telegram-cli"
+)
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
 SEARCH_PATH = ["/opt/homebrew/bin", str(Path.home() / ".local" / "bin"), "/usr/local/bin"]
 SNIPPET = 4000
@@ -53,7 +63,55 @@ class CliError(Exception):
         self.exit_code = exit_code
 
 
-# --- Keychain (through /usr/bin/security; values go on stdin, never in argv) ---
+# --- Secret store: macOS Keychain, or a JSON file with mode 0600 ---
+
+def secret_read(account):
+    if USE_KEYCHAIN:
+        return keychain_read(account)
+    return file_secrets().get(account) or None
+
+
+def secret_write(account, value):
+    if not value or any(c in value for c in " \"'\\\n\r\t"):
+        raise CliError(f"refusing to store an unexpected value for {account}", "bad_value")
+    if USE_KEYCHAIN:
+        return keychain_write(account, value)
+    data = file_secrets()
+    data[account] = value
+    file_secrets_save(data)
+
+
+def secret_delete(account):
+    if USE_KEYCHAIN:
+        return keychain_delete(account)
+    data = file_secrets()
+    if data.pop(account, None) is not None:
+        file_secrets_save(data)
+
+
+def file_secrets():
+    try:
+        return json.loads(SECRETS_FILE.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise CliError(f"cannot read the secrets file {SECRETS_FILE}: {e}", "secrets_file")
+
+
+def file_secrets_save(data):
+    SECRETS_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".secrets-", dir=SECRETS_FILE.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, SECRETS_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+# Keychain through /usr/bin/security; values go on stdin, never in argv.
 
 def keychain_read(account):
     r = subprocess.run(
@@ -66,8 +124,6 @@ def keychain_read(account):
 
 
 def keychain_write(account, value):
-    if not value or any(c in value for c in " \"'\\\n\r\t"):
-        raise CliError(f"refusing to store an unexpected value for {account}", "bad_value")
     r = subprocess.run(
         ["security", "-i"],
         input=f'add-generic-password -U -s {KEYCHAIN_SERVICE} -a {account} -l "telegram-cli {account}" -w {value}\n',
@@ -85,8 +141,8 @@ def keychain_delete(account):
 
 
 def api_credentials():
-    api_id = keychain_read(ACCOUNT_API_ID)
-    api_hash = keychain_read(ACCOUNT_API_HASH)
+    api_id = secret_read(ACCOUNT_API_ID)
+    api_hash = secret_read(ACCOUNT_API_HASH)
     if not api_id or not api_hash:
         raise CliError("Telegram app credentials missing: run `telegram auth setup`", "not_configured", 2)
     return int(api_id), api_hash
@@ -96,13 +152,13 @@ def make_client(session=None):
     api_id, api_hash = api_credentials()
     return TelegramClient(
         StringSession(session or ""), api_id, api_hash,
-        device_model=os.environ.get("TELEGRAM_CLI_DEVICE") or "telegram-cli (Mac)", app_version=f"telegram-cli {VERSION}",
-        system_version="macOS", receive_updates=False,
+        device_model=os.environ.get("TELEGRAM_CLI_DEVICE") or ("telegram-cli (Mac)" if IS_MAC else "telegram-cli (Linux)"),
+        app_version=f"telegram-cli {VERSION}", system_version="macOS" if IS_MAC else "Linux", receive_updates=False,
     )
 
 
 async def connected_client():
-    session = keychain_read(ACCOUNT_SESSION)
+    session = secret_read(ACCOUNT_SESSION)
     if not session:
         raise CliError("not logged in: run `telegram auth login`", "not_logged_in", 3)
     client = make_client(session)
@@ -291,8 +347,8 @@ async def cmd_auth_setup(args):
     api_hash = os.environ.get("TELEGRAM_API_HASH") or getpass.getpass("api_hash: ").strip()
     if not api_id.isdigit() or len(api_hash) < 16:
         raise CliError("invalid api_id / api_hash", "bad_args")
-    keychain_write(ACCOUNT_API_ID, api_id)
-    keychain_write(ACCOUNT_API_HASH, api_hash)
+    secret_write(ACCOUNT_API_ID, api_id)
+    secret_write(ACCOUNT_API_HASH, api_hash)
     return {"ok": True, "stored": [ACCOUNT_API_ID, ACCOUNT_API_HASH]}
 
 
@@ -313,8 +369,8 @@ def two_step_password(args):
 
 async def finish_login(client, args):
     me = await client.get_me()
-    keychain_write(ACCOUNT_SESSION, client.session.save())
-    keychain_delete(ACCOUNT_PENDING)
+    secret_write(ACCOUNT_SESSION, client.session.save())
+    secret_delete(ACCOUNT_PENDING)
     return {"ok": True, "me": peer_json(me)}
 
 
@@ -343,7 +399,7 @@ def sent_via(sent):
 
 async def cmd_auth_login(args):
     """Interactive in a terminal; without one, in steps: --phone (sends the code), --code, --password."""
-    pending = keychain_read(ACCOUNT_PENDING)
+    pending = secret_read(ACCOUNT_PENDING)
     state = json.loads(base64.urlsafe_b64decode(pending)) if pending else None
     if args.phone and not args.code:
         state = None  # a new --phone restarts the login
@@ -361,14 +417,14 @@ async def cmd_auth_login(args):
                 raise CliError("no terminal: run `telegram auth login --phone +55...`, then `--code <code>`", "bad_args")
             sent = await client.send_code_request(phone)
             state = {"phone": phone, "hash": sent.phone_code_hash, "session": client.session.save()}
-            keychain_write(ACCOUNT_PENDING, base64.urlsafe_b64encode(json.dumps(state).encode()).decode())
+            secret_write(ACCOUNT_PENDING, base64.urlsafe_b64encode(json.dumps(state).encode()).decode())
             if not sys.stdin.isatty() and not args.code:
                 return {"ok": True, "code_sent": True, "sent_via": sent_via(sent), "next": "telegram auth login --code <code>"}
         code = args.code or input("Code sent by Telegram: ").strip()
         try:
             await client.sign_in(phone=state["phone"], code=code, phone_code_hash=state["hash"])
         except SessionPasswordNeededError:
-            keychain_write(ACCOUNT_PENDING, base64.urlsafe_b64encode(json.dumps({**state, "session": client.session.save()}).encode()).decode())
+            secret_write(ACCOUNT_PENDING, base64.urlsafe_b64encode(json.dumps({**state, "session": client.session.save()}).encode()).decode())
             await client.sign_in(password=two_step_password(args))
         return await finish_login(client, args)
     finally:
@@ -387,7 +443,7 @@ async def cmd_auth_status(args):
 
 
 async def cmd_auth_logout(args):
-    session = keychain_read(ACCOUNT_SESSION)
+    session = secret_read(ACCOUNT_SESSION)
     if session:
         client = make_client(session)
         await client.connect()
@@ -396,7 +452,7 @@ async def cmd_auth_logout(args):
                 await client.log_out()
         finally:
             await client.disconnect()
-    keychain_delete(ACCOUNT_SESSION)
+    secret_delete(ACCOUNT_SESSION)
     return {"ok": True}
 
 
@@ -566,7 +622,7 @@ def parser():
     p.add_argument("--version", action="version", version=f"telegram-cli {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    auth = sub.add_parser("auth", help="credentials and session (Keychain)").add_subparsers(dest="auth_cmd", required=True)
+    auth = sub.add_parser("auth", help="credentials and session (Keychain or secrets file)").add_subparsers(dest="auth_cmd", required=True)
     auth.add_parser("setup", help="store api_id/api_hash from my.telegram.org")
     login = auth.add_parser("login", help="sign in with phone + code (+ 2FA password)")
     login.add_argument("--phone", help="start: sends the code to the Telegram app")
@@ -574,7 +630,7 @@ def parser():
     login.add_argument("--password", action="store_true", help="finish a login that needs the 2FA password (asks in a terminal)")
     login.add_argument("--password-env", metavar="VAR", help="read the 2FA password from this environment variable")
     auth.add_parser("status", help="is the session valid?")
-    auth.add_parser("logout", help="end the session on Telegram and remove it from the Keychain")
+    auth.add_parser("logout", help="end the session on Telegram and remove it from the secret store")
 
     sub.add_parser("me", help="the signed-in account")
 

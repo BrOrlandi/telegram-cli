@@ -2,7 +2,7 @@
 
 Headless CLI for your **own** Telegram account: a user session over MTProto through [Telethon](https://docs.telethon.dev), not a bot. Read chats, unread messages and search, send messages that notify people with real mentions, download media and transcribe voice messages locally. JSON output makes it easy to script or plug into an agent.
 
-> **macOS only for now.** Secrets go to the macOS Keychain through `/usr/bin/security`, and `transcribe` uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), which needs Apple Silicon.
+> **macOS and Linux.** On macOS secrets go to the Keychain through `/usr/bin/security`; on Linux to a file only you can read (see below). `transcribe` uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), which needs Apple Silicon, so it only works on a Mac.
 
 ## Install
 
@@ -12,9 +12,14 @@ uv tool install --python 3.12 -e .            # installs ~/.local/bin/telegram
 uv tool install --python 3.12 mlx-whisper     # only for `transcribe`; also needs ffmpeg (brew install ffmpeg)
 ```
 
-## Credentials (macOS Keychain)
+On Linux without `uv`, a plain venv works: `python3 -m venv .venv && .venv/bin/pip install -e .` (the command is `.venv/bin/telegram`).
 
-Nothing secret is written to disk or printed. Everything lives in the Keychain under the service `$TELEGRAM_CLI_KEYCHAIN_SERVICE` (default `telegram-cli`), accounts `telegram:api_id`, `telegram:api_hash` and `telegram:session`.
+## Credentials
+
+Nothing secret is printed or passed in a command line. The app credentials and the session are stored as `telegram:api_id`, `telegram:api_hash` and `telegram:session`:
+
+- **macOS:** in the Keychain, under the service `$TELEGRAM_CLI_KEYCHAIN_SERVICE` (default `telegram-cli`).
+- **Linux** (or any system when `$TELEGRAM_CLI_SECRETS_FILE` is set): in a JSON file, default `~/.config/telegram-cli/secrets.json`, written with mode `0600` in a `0700` directory. Anyone who can read that file can use your account, so keep it on a machine you control.
 
 ```bash
 telegram auth setup    # api_id / api_hash from https://my.telegram.org (or TELEGRAM_API_ID / TELEGRAM_API_HASH in the env)
@@ -31,7 +36,7 @@ telegram auth login --code 12345
 telegram auth login --password               # only with two-step verification; asks in a terminal (or --password-env VAR)
 ```
 
-The session shows up in Telegram's device list as "telegram-cli (Mac)" (`TELEGRAM_CLI_DEVICE` changes it).
+The session shows up in Telegram's device list as "telegram-cli (Mac)" or "telegram-cli (Linux)" (`TELEGRAM_CLI_DEVICE` changes it).
 
 ## Commands
 
